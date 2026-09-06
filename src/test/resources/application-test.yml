@@ -1,0 +1,4 @@
+adapter:
+  storage-path: ${java.io.tmpdir}/opengpt-test-auth.json
+  public-base-url: http://localhost:5080
+  traffic-log-path: ${java.io.tmpdir}/opengpt-test-traffic.log
