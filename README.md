@@ -82,13 +82,16 @@ Cursor currently drops its reasoning-effort selector from requests sent through 
 For Cursor, manually add and select one of the deliberately non-GPT-looking `cla-*` aliases:
 
 ```text
+cla-astra-low     cla-astra-medium    cla-astra-high
+cla-astra-xhigh   cla-astra-max
+
 cla-sol-low       cla-terra-low       cla-luna-low
 cla-sol-medium    cla-terra-medium    cla-luna-medium
 cla-sol-high      cla-terra-high      cla-luna-high
 cla-sol-xhigh     cla-terra-xhigh     cla-luna-xhigh
 ```
 
-For example, `cla-sol-low` is sent upstream as model `gpt-5.6-sol` with `reasoning.effort=low`. These aliases are advertised by `/v1/models`. The older `gpt-5.6-*-{effort}` aliases remain supported for clients that preserve the full model ID, but they are not reliable through affected Cursor versions. Explicit `reasoning.effort`, `reasoning_effort`, `reasoningEffort`, and compatible `cursor_model_params` values also take precedence over model aliases and fallback.
+For example, `cla-astra-high` is sent upstream as model `gpt-6-astra` with `reasoning.effort=high`, while `cla-sol-low` maps to `gpt-5.6-sol` with `reasoning.effort=low`. These aliases are advertised by `/v1/models`. Astra also supports the direct `gpt-6-astra-{low|medium|high|xhigh|max}` aliases and defaults to `high`; access still depends on the ChatGPT account's staged Astra entitlement. The older `gpt-5.6-*-{effort}` aliases remain supported for clients that preserve the full model ID, but they are not reliable through affected Cursor versions. Explicit `reasoning.effort`, `reasoning_effort`, `reasoningEffort`, and compatible `cursor_model_params` values also take precedence over model aliases and fallback.
 
 The adapter also writes full, unredacted client and Codex traffic to `~/.opengpt/traffic.log`. This can include prompts, source code, tool arguments/results, images, local paths, and model output. Protect or remove this file before sharing diagnostics.
 

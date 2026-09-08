@@ -110,4 +110,47 @@ class ModelResolverTest {
     fun `marks gpt-5_6-sol as codex compatible`() {
         assertTrue(resolver.isCodexCompatible("gpt-5.6-sol"))
     }
+
+    @Test
+    fun `supports Astra base model and effort aliases`() {
+        assertEquals("gpt-6-astra", resolver.resolve("gpt-6-astra").model)
+        assertTrue(resolver.isCodexCompatible("gpt-6-astra"))
+
+        val direct = resolver.resolve("gpt-6-astra-max")
+        assertEquals("gpt-6-astra", direct.model)
+        assertEquals("max", direct.reasoningEffort)
+
+        val cursor = resolver.resolve("cla-astra-high")
+        assertEquals("gpt-6-astra", cursor.model)
+        assertEquals("high", cursor.reasoningEffort)
+    }
+
+    @Test
+    fun `advertises Astra models including max`() {
+        assertTrue(ModelResolver.PUBLIC_MODELS.contains("gpt-6-astra"))
+        assertTrue(ModelResolver.PUBLIC_MODELS.contains("gpt-6-astra-low"))
+        assertTrue(ModelResolver.PUBLIC_MODELS.contains("gpt-6-astra-max"))
+        assertTrue(ModelResolver.PUBLIC_MODELS.contains("cla-astra-xhigh"))
+        assertTrue(ModelResolver.PUBLIC_MODELS.contains("cla-astra-max"))
+    }
+
+    @Test
+    fun `preserves explicit max for Astra only`() {
+        val astra =
+            ObjectMapper().readTree(
+                """{"model":"gpt-6-astra","reasoning":{"effort":"max"}}""",
+            )
+        assertEquals("max", ReasoningEffortResolver.fromRequest(astra))
+
+        val sol =
+            ObjectMapper().readTree(
+                """{"model":"gpt-5.6-sol","reasoning":{"effort":"max"}}""",
+            )
+        assertEquals("xhigh", ReasoningEffortResolver.fromRequest(sol))
+    }
+
+    @Test
+    fun `defaults Astra to high`() {
+        assertEquals("high", ModelResolver.defaultEffortFor("gpt-6-astra"))
+    }
 }

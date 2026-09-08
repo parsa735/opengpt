@@ -47,6 +47,7 @@ class SseProxy(
         }
         copy.put("model", resolved.model)
         applyResolvedEffort(copy, resolved)
+        normalizeModelSpecificEffort(copy, resolved.model)
         ensureDefaultReasoningEffort(copy, resolved.model)
         ensureReasoningSummary(copy)
         ensureEncryptedReasoningInclude(copy)
@@ -96,9 +97,22 @@ class SseProxy(
         }
     }
 
+    private fun normalizeModelSpecificEffort(
+        copy: ObjectNode,
+        model: String,
+    ) {
+        if (model != "gpt-6-astra") return
+        val reasoning = copy.path("reasoning") as? ObjectNode ?: return
+        val effort = JsonNodes.textAt(reasoning, "effort").lowercase()
+        if (effort == "none" || effort == "minimal") {
+            reasoning.remove("effort")
+            log.info("Removed unsupported reasoning.effort={} for model={}; applying default", effort, model)
+        }
+    }
+
     /**
      * Cursor "Extra High" often does not send reasoning_effort to custom base URLs.
-     * Default xhigh for GPT-5.6 Codex models so agent loops match OpenCode/Cursor native.
+     * Default xhigh for GPT-5.6 Codex models and high for Astra.
      */
     private fun ensureDefaultReasoningEffort(
         copy: ObjectNode,

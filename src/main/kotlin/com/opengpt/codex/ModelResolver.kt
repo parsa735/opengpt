@@ -9,16 +9,17 @@ import tools.jackson.databind.JsonNode
  *
  * Cursor's custom Base URL path currently drops its UI reasoning selector. It
  * also canonicalizes GPT-looking effort aliases before sending them, so
- * Cursor-safe `cla-{sol|terra|luna}-{effort}` aliases carry the choice reliably.
+ * Cursor-safe `cla-{sol|terra|luna|astra}-{effort}` aliases carry the choice reliably.
  * `cursor_model_params` support is retained for compatible Cursor SDK/proxy clients.
  */
 object ReasoningEffortResolver {
     private val cursorParameterIds = setOf("thinking_effort", "reasoning_effort", "reasoningeffort")
 
     fun fromRequest(request: JsonNode): String? {
+        val model = JsonNodes.textAt(request, "model").lowercase()
         val reasoning = request.path("reasoning")
         if (reasoning.isObject) {
-            normalize(JsonNodes.textAt(reasoning, "effort"))?.let { return it }
+            normalize(JsonNodes.textAt(reasoning, "effort"), model)?.let { return it }
         }
 
         val cursorParameters = request.path("cursor_model_params")
@@ -26,22 +27,26 @@ object ReasoningEffortResolver {
             for (parameter in cursorParameters) {
                 val id = JsonNodes.textAt(parameter, "id").trim().lowercase().replace("-", "_")
                 if (id in cursorParameterIds) {
-                    normalize(JsonNodes.textAt(parameter, "value"))?.let { return it }
+                    normalize(JsonNodes.textAt(parameter, "value"), model)?.let { return it }
                 }
             }
         }
 
         for (field in listOf("reasoning_effort", "reasoningEffort")) {
-            normalize(JsonNodes.textAt(request, field))?.let { return it }
+            normalize(JsonNodes.textAt(request, field), model)?.let { return it }
         }
         return null
     }
 
-    fun normalize(raw: String?): String? {
+    fun normalize(
+        raw: String?,
+        model: String = "",
+    ): String? {
         val value = raw?.trim()?.lowercase().orEmpty()
         if (value.isEmpty()) return null
         return when (value.replace("-", "_").replace(" ", "_")) {
-            "extra_high", "extrahigh", "max" -> "xhigh"
+            "extra_high", "extrahigh" -> "xhigh"
+            "max" -> if (model.contains("astra")) "max" else "xhigh"
             else -> value
         }
     }
@@ -86,7 +91,7 @@ class ModelResolver {
 
     private fun resolveCursorEffortAlias(modelId: String): Resolved? {
         for ((aliasBase, codexModel) in CURSOR_EFFORT_ALIAS_BASES) {
-            for (effort in PUBLIC_EFFORTS) {
+            for (effort in publicEffortsFor(codexModel)) {
                 if (modelId == "$aliasBase-$effort") {
                     return Resolved(codexModel, effort)
                 }
@@ -108,7 +113,7 @@ class ModelResolver {
             val suffix = "-$effort"
             if (modelId.endsWith(suffix)) {
                 val base = modelId.removeSuffix(suffix)
-                return Resolved(base, ReasoningEffortResolver.normalize(effort))
+                return Resolved(base, ReasoningEffortResolver.normalize(effort, base))
             }
         }
         return null
@@ -121,6 +126,7 @@ class ModelResolver {
 
         private val EFFORT_ALIAS_BASES =
             listOf(
+                "gpt-6-astra",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
@@ -128,15 +134,21 @@ class ModelResolver {
 
         private val CURSOR_EFFORT_ALIAS_BASES =
             linkedMapOf(
+                "cla-astra" to "gpt-6-astra",
                 "cla-sol" to "gpt-5.6-sol",
                 "cla-terra" to "gpt-5.6-terra",
                 "cla-luna" to "gpt-5.6-luna",
             )
 
         private val PUBLIC_EFFORTS = listOf("low", "medium", "high", "xhigh")
+        private val ASTRA_EFFORTS = PUBLIC_EFFORTS + "max"
+
+        private fun publicEffortsFor(model: String): List<String> =
+            if (model == "gpt-6-astra") ASTRA_EFFORTS else PUBLIC_EFFORTS
 
         val BASE_ALLOWED =
             setOf(
+                "gpt-6-astra",
                 "gpt-5.4",
                 "gpt-5.4-mini",
                 "gpt-5.5",
@@ -148,18 +160,18 @@ class ModelResolver {
         /** Models advertised on /v1/models (OpenCode Codex OAuth surface). */
         val PUBLIC_MODELS =
             buildList {
+                addAll(EFFORT_ALIAS_BASES)
                 add("gpt-5.4")
                 add("gpt-5.4-mini")
                 add("gpt-5.5")
-                addAll(EFFORT_ALIAS_BASES)
                 add("gpt-5.3-codex-spark")
                 EFFORT_ALIAS_BASES.forEach { model ->
-                    PUBLIC_EFFORTS.forEach { effort ->
+                    publicEffortsFor(model).forEach { effort ->
                         add("$model-$effort")
                     }
                 }
-                CURSOR_EFFORT_ALIAS_BASES.keys.forEach { alias ->
-                    PUBLIC_EFFORTS.forEach { effort ->
+                CURSOR_EFFORT_ALIAS_BASES.forEach { (alias, model) ->
+                    publicEffortsFor(model).forEach { effort ->
                         add("$alias-$effort")
                     }
                 }
@@ -169,6 +181,7 @@ class ModelResolver {
 
         fun defaultEffortFor(model: String): String {
             val id = model.lowercase()
+            if (id.contains("astra")) return "high"
             if (id.contains("5.6") || id.contains("sol") || id.contains("terra") || id.contains("luna")) {
                 return "xhigh"
             }

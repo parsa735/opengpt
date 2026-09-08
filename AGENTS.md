@@ -370,16 +370,17 @@ This feature reads local files named by client content and uploads recovered byt
 
 #### `src/main/kotlin/com/opengpt/codex/ModelResolver.kt`
 
-- `ReasoningEffortResolver`: extracts and normalizes effort from `reasoning.effort`, Cursor-style `cursor_model_params`, `reasoning_effort`, or `reasoningEffort`, in that precedence order. Cursor `max`/`extra high` normalize to Codex `xhigh`.
+- `ReasoningEffortResolver`: extracts and normalizes effort from `reasoning.effort`, Cursor-style `cursor_model_params`, `reasoning_effort`, or `reasoningEffort`, in that precedence order. `extra high` normalizes to `xhigh`; `max` remains distinct for Astra and normalizes to `xhigh` for older models.
 - `ModelResolver`: normalizes requested model IDs and extracts recognized reasoning-effort suffixes before generic model compatibility checks.
 - `ModelResolver.Resolved`: resolved upstream model plus optional effort derived from the model suffix.
-- `BASE_ALLOWED`: known compatible base models.
-- `PUBLIC_MODELS`: base models, GPT-looking effort aliases for compatible clients, and Cursor-safe `cla-{sol|terra|luna}-{low|medium|high|xhigh}` aliases, advertised by `/v1/models`.
+- `BASE_ALLOWED`: known compatible base models, including `gpt-6-astra`.
+- `PUBLIC_MODELS`: base models, GPT-looking effort aliases for compatible clients, and Cursor-safe `cla-{astra|sol|terra|luna}-*` aliases, advertised by `/v1/models`.
 - `DEFAULT`: fallback model, currently `gpt-5.4`.
-- Effort aliases such as `gpt-5.6-sol-medium`, `gpt-5.6-terra-high`, and `gpt-5.5-low` are stripped to the base model and converted to `reasoning.effort`.
-- Cursor-safe aliases such as `cla-sol-low` are explicitly mapped to their GPT-5.6 Codex model and effort. Their non-GPT-looking names prevent affected Cursor versions from canonicalizing the effort suffix away before making the HTTP request.
+- Astra supports `low`, `medium`, `high`, `xhigh`, and `max`, defaults to `high`, and maps `none`/`minimal` to that default because Astra does not support those levels. Account entitlement is still enforced upstream.
+- Effort aliases such as `gpt-6-astra-max`, `gpt-5.6-sol-medium`, and `gpt-5.6-terra-high` are stripped to the base model and converted to `reasoning.effort`.
+- Cursor-safe aliases such as `cla-astra-max` and `cla-sol-low` are explicitly mapped to their Codex model and effort. Their non-GPT-looking names prevent affected Cursor versions from canonicalizing the effort suffix away before making the HTTP request.
 - Versioned GPT IDs whose parsed numeric version is greater than 5.4 pass compatibility checks except plain `gpt-5.6` and `-pro` variants. The implementation uses `String.toDouble()`, so semantic versions such as `5.10` would be interpreted as `5.1`.
-- Default effort policy: 5.6/sol/terra/luna -> `xhigh`; 5.5/5.4 -> `high`; otherwise `medium`.
+- Default effort policy: Astra -> `high`; 5.6/sol/terra/luna -> `xhigh`; 5.5/5.4 -> `high`; otherwise `medium`.
 - Cursor's Override OpenAI Base URL path currently drops its UI effort selector and can turn a selected `gpt-5.6-sol-low` alias back into `gpt-5.6-sol`. A bare GPT-5.6 request therefore reaches the fallback; affected Cursor users must select a `cla-*` alias for a reliable per-request choice.
 - Model discovery is advisory: unknown/incompatible IDs are generally lowercased and forwarded rather than rejected.
 - The `gpt-5.4` default is duplicated here and as a literal in `CodexRequestMapper`; keep them aligned.
