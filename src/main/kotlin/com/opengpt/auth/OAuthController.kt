@@ -24,6 +24,60 @@ class OAuthController(
         return RedirectView(oauthService.buildAuthorizationUrl())
     }
 
+    @PostMapping("/auth/device/start", produces = [MediaType.APPLICATION_JSON_VALUE])
+    @ResponseBody
+    fun startDeviceCode(): org.springframework.http.ResponseEntity<Map<String, Any?>> {
+        return try {
+            val started = oauthService.startDeviceCodeLogin()
+            org.springframework.http.ResponseEntity.ok(
+                mapOf(
+                    "verificationUrl" to started.verificationUrl,
+                    "userCode" to started.userCode,
+                    "intervalSeconds" to started.intervalSeconds,
+                    "expiresInSeconds" to started.expiresInSeconds,
+                ),
+            )
+        } catch (error: DeviceCodeNotEnabledException) {
+            org.springframework.http.ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                mapOf(
+                    "status" to "error",
+                    "message" to (error.message ?: "Device code login is not enabled"),
+                ),
+            )
+        } catch (error: IllegalStateException) {
+            org.springframework.http.ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(
+                mapOf(
+                    "status" to "error",
+                    "message" to (error.message ?: "Device code login failed"),
+                ),
+            )
+        }
+    }
+
+    @PostMapping("/auth/device/poll", produces = [MediaType.APPLICATION_JSON_VALUE])
+    @ResponseBody
+    fun pollDeviceCode(): Map<String, Any?> {
+        return when (val result = oauthService.pollDeviceCodeLogin()) {
+            DeviceCodePollResult.NoPending ->
+                mapOf("status" to "no_pending")
+            DeviceCodePollResult.Pending ->
+                mapOf("status" to "pending")
+            DeviceCodePollResult.Expired ->
+                mapOf("status" to "expired")
+            is DeviceCodePollResult.Completed ->
+                mapOf(
+                    "status" to "completed",
+                    "authenticated" to true,
+                    "accountId" to result.token.accountId,
+                )
+            is DeviceCodePollResult.Failed ->
+                mapOf(
+                    "status" to "error",
+                    "message" to result.message,
+                )
+        }
+    }
+
     @GetMapping("/auth/callback")
     @ResponseBody
     fun callback(
@@ -97,7 +151,8 @@ class OAuthController(
             } else {
                 """
                 <p>Not authenticated.</p>
-                <p class="hint">Login opens OpenAI OAuth and returns to <code>http://localhost:1455/auth/callback</code> (Codex-registered redirect).</p>
+                <p class="hint">Browser login returns to <code>http://localhost:1455/auth/callback</code> (Codex-registered redirect).</p>
+                <p class="hint">Device code login does not need the local callback port. Enable <strong>Device code authorization</strong> in ChatGPT Security settings first.</p>
                 """.trimIndent()
             }
 
@@ -111,7 +166,10 @@ class OAuthController(
                 body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; }
                 a.button, button { display: inline-block; background: #111; color: #fff; padding: .65rem 1.1rem; border-radius: .5rem; text-decoration: none; border: 0; cursor: pointer; font: inherit; }
                 button.secondary, .secondary { background: #444; margin-top: 1rem; }
+                button.linkish { background: transparent; color: #111; padding: 0; text-decoration: underline; margin-top: .75rem; }
+                .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1rem 0; }
                 .ok { color: #0a7a32; }
+                .err { color: #a11; }
                 .hint, .warn { color: #555; font-size: .95rem; }
                 .warn { color: #8a5a00; }
                 .card { background: #f6f6f6; padding: 1rem; border-radius: .75rem; margin: 1rem 0; }
@@ -120,14 +178,29 @@ class OAuthController(
                 input { flex: 1; font-family: ui-monospace, monospace; padding: .55rem .65rem; border: 1px solid #ccc; border-radius: .4rem; }
                 code { background: #eee; padding: .1rem .35rem; border-radius: .25rem; }
                 #toast { display:none; margin-top:.75rem; color:#0a7a32; font-weight:600; }
+                #devicePanel { display:none; }
+                .code { font-size: 1.6rem; letter-spacing: .12em; font-family: ui-monospace, monospace; font-weight: 700; }
               </style>
             </head>
             <body>
               <h1>OpenGPT</h1>
               $body
-              <p><a class="button" href="/auth/login">${if (authenticated) "Re-login with OpenAI" else "Login with OpenAI"}</a></p>
+              <div class="actions">
+                <a class="button" href="/auth/login">${if (authenticated) "Re-login with browser" else "Login with browser"}</a>
+                <button type="button" class="secondary" id="deviceLoginBtn" onclick="startDeviceLogin()">${if (authenticated) "Re-login with device code" else "Login with device code"}</button>
+              </div>
+              <div id="devicePanel" class="card">
+                <p>Open this link and enter the code:</p>
+                <p><a id="deviceUrl" href="#" target="_blank" rel="noopener"></a></p>
+                <p class="code" id="deviceCode"></p>
+                <p class="hint" id="deviceStatus">Waiting for approval…</p>
+                <button type="button" class="linkish" onclick="cancelDeviceLogin()">Cancel</button>
+              </div>
               <div id="toast">Copied</div>
               <script>
+                let deviceTimer = null;
+                let deviceIntervalMs = 5000;
+
                 function copyField(id) {
                   const el = document.getElementById(id);
                   navigator.clipboard.writeText(el.value).then(() => {
@@ -135,6 +208,72 @@ class OAuthController(
                     toast.style.display = 'block';
                     setTimeout(() => toast.style.display = 'none', 1200);
                   });
+                }
+
+                function setDeviceStatus(text, isError) {
+                  const el = document.getElementById('deviceStatus');
+                  el.textContent = text;
+                  el.className = isError ? 'err' : 'hint';
+                }
+
+                function cancelDeviceLogin() {
+                  if (deviceTimer) {
+                    clearTimeout(deviceTimer);
+                    deviceTimer = null;
+                  }
+                  document.getElementById('devicePanel').style.display = 'none';
+                  setDeviceStatus('Waiting for approval…', false);
+                }
+
+                async function pollDeviceLogin() {
+                  try {
+                    const res = await fetch('/auth/device/poll', { method: 'POST' });
+                    const data = await res.json();
+                    if (data.status === 'completed') {
+                      setDeviceStatus('Authenticated. Reloading…', false);
+                      window.location.reload();
+                      return;
+                    }
+                    if (data.status === 'pending') {
+                      setDeviceStatus('Waiting for approval…', false);
+                      deviceTimer = setTimeout(pollDeviceLogin, deviceIntervalMs);
+                      return;
+                    }
+                    if (data.status === 'expired') {
+                      setDeviceStatus('Code expired. Start device login again.', true);
+                      return;
+                    }
+                    if (data.status === 'no_pending') {
+                      setDeviceStatus('No active device login. Start again.', true);
+                      return;
+                    }
+                    setDeviceStatus(data.message || 'Device login failed.', true);
+                  } catch (err) {
+                    setDeviceStatus('Device login poll failed.', true);
+                  }
+                }
+
+                async function startDeviceLogin() {
+                  cancelDeviceLogin();
+                  setDeviceStatus('Requesting device code…', false);
+                  document.getElementById('devicePanel').style.display = 'block';
+                  try {
+                    const res = await fetch('/auth/device/start', { method: 'POST' });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      const msg = data.message || data.detail || data.error || ('HTTP ' + res.status);
+                      setDeviceStatus(typeof msg === 'string' ? msg : 'Could not start device login.', true);
+                      return;
+                    }
+                    document.getElementById('deviceUrl').href = data.verificationUrl;
+                    document.getElementById('deviceUrl').textContent = data.verificationUrl;
+                    document.getElementById('deviceCode').textContent = data.userCode;
+                    deviceIntervalMs = Math.max(2000, (data.intervalSeconds || 5) * 1000);
+                    setDeviceStatus('Waiting for approval…', false);
+                    deviceTimer = setTimeout(pollDeviceLogin, deviceIntervalMs);
+                  } catch (err) {
+                    setDeviceStatus('Could not start device login.', true);
+                  }
                 }
               </script>
             </body>

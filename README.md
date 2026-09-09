@@ -49,12 +49,14 @@ Server binds to `127.0.0.1:5080` only (OAuth callback still uses `127.0.0.1:1455
 ## First-time auth
 
 1. Open http://localhost:5080
-2. Click **Login with OpenAI**
-3. Complete ChatGPT OAuth
-4. Browser returns to `http://localhost:1455/auth/callback` (required by the Codex OAuth client)
-5. Tokens are stored at `~/.opengpt/auth.json` (best-effort `0600` on POSIX filesystems)
+2. Choose a login method:
+   - **Login with browser** — ChatGPT OAuth returns to `http://localhost:1455/auth/callback` (Codex-registered redirect)
+   - **Login with device code** — open `https://auth.openai.com/codex/device`, enter the one-time code, no local callback port required
+3. Tokens are stored at `~/.opengpt/auth.json` (best-effort `0600` on POSIX filesystems)
 
-Do **not** change `openai.oauth.callback-url` away from port `1455` — OpenAI rejects other redirect URIs for this client id. `openai.oauth.callback-url` and `openai.oauth.callback-port` must also remain consistent with each other.
+For device code login, enable **Device code authorization** in ChatGPT → Settings → Security (or your workspace admin permissions). Codes expire after 15 minutes.
+
+Do **not** change `openai.oauth.callback-url` away from port `1455` — OpenAI rejects other redirect URIs for this client id. `openai.oauth.callback-url` and `openai.oauth.callback-port` must also remain consistent with each other. Device-code token exchange uses OpenAI’s hosted `…/deviceauth/callback` redirect and does not use port `1455`.
 
 ## Client configuration
 
@@ -105,7 +107,9 @@ Point the OpenAI provider base URL at `http://localhost:5080/v1` and use the gen
 |--------|------|---------|
 | GET | `/health` | Liveness |
 | GET | `/` | Login UI |
-| GET | `/auth/login` | Start OAuth |
+| GET | `/auth/login` | Start browser OAuth |
+| POST | `/auth/device/start` | Start Codex device-code login |
+| POST | `/auth/device/poll` | Poll device-code approval / complete token exchange |
 | GET | `/auth/callback` | Main-server OAuth callback fallback |
 | GET | `/auth/status` | Authentication metadata |
 | POST | `/auth/regenerate-key` | Replace the local client API key |
