@@ -1,6 +1,8 @@
 package com.opengpt.auth
 
 import com.opengpt.config.AdapterProperties
+import com.opengpt.util.PublicBaseUrlResolver
+import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Controller
@@ -19,9 +21,11 @@ class OAuthController(
     private val adapterProperties: AdapterProperties,
 ) {
     @GetMapping("/auth/login")
-    fun login(): RedirectView {
+    fun login(request: HttpServletRequest): RedirectView {
         callbackServer.ensureStarted()
-        return RedirectView(oauthService.buildAuthorizationUrl())
+        val returnUrl =
+            PublicBaseUrlResolver.fromRequest(request, adapterProperties.publicBaseUrl)
+        return RedirectView(oauthService.buildAuthorizationUrl(returnUrl))
     }
 
     @PostMapping("/auth/device/start", produces = [MediaType.APPLICATION_JSON_VALUE])
@@ -85,6 +89,7 @@ class OAuthController(
         @RequestParam(required = false) state: String?,
         @RequestParam(required = false) error: String?,
         @RequestParam(name = "error_description", required = false) errorDescription: String?,
+        request: HttpServletRequest,
     ): String {
         if (!error.isNullOrBlank()) {
             val message = errorDescription ?: error
@@ -93,8 +98,13 @@ class OAuthController(
         if (code.isNullOrBlank() || state.isNullOrBlank()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Missing authorization code or state")
         }
-        val token = oauthService.handleCallback(code, state)
-        return successHtml(token.apiKey.orEmpty())
+        val result = oauthService.handleCallback(code, state)
+        val home =
+            PublicBaseUrlResolver.sanitize(
+                result.returnUrl,
+                PublicBaseUrlResolver.fromRequest(request, adapterProperties.publicBaseUrl),
+            )
+        return successHtml(result.token.apiKey.orEmpty(), home)
     }
 
     @PostMapping("/auth/regenerate-key")
@@ -120,11 +130,25 @@ class OAuthController(
 
     @GetMapping(value = ["/", "/index.html"], produces = [MediaType.TEXT_HTML_VALUE])
     @ResponseBody
-    fun home(): String {
-        val home = adapterProperties.publicBaseUrl.trimEnd('/')
+    fun home(request: HttpServletRequest): String {
+        val home =
+            PublicBaseUrlResolver.fromRequest(request, adapterProperties.publicBaseUrl)
+        val remoteAccess = !PublicBaseUrlResolver.isLoopbackHost(home)
         val token = tokenStore.getToken()
         val authenticated = token != null
         val apiKey = token?.apiKey.orEmpty()
+        val homeAttr = PublicBaseUrlResolver.escapeHtml(home)
+        val keyAttr = PublicBaseUrlResolver.escapeHtml(apiKey)
+
+        val remoteHint =
+            if (remoteAccess) {
+                """
+                <p class="warn">You are reaching this adapter through a public URL. Use <strong>device code</strong> login —
+                browser OAuth always returns to <code>http://localhost:1455</code> on the machine running OpenGPT, not on your phone/laptop.</p>
+                """.trimIndent()
+            } else {
+                ""
+            }
 
         val body =
             if (authenticated) {
@@ -133,16 +157,17 @@ class OAuthController(
                 <div class="card">
                   <label>Base URL</label>
                   <div class="row">
-                    <input id="baseUrl" readonly value="$home/v1"/>
+                    <input id="baseUrl" readonly value="$homeAttr/v1"/>
                     <button type="button" onclick="copyField('baseUrl')">Copy</button>
                   </div>
                   <label>API Key</label>
                   <div class="row">
-                    <input id="apiKey" readonly value="$apiKey"/>
+                    <input id="apiKey" readonly value="$keyAttr"/>
                     <button type="button" onclick="copyField('apiKey')">Copy</button>
                   </div>
                   <p class="hint">Paste both values into Cursor → Settings → Models → OpenAI API Key + Override OpenAI Base URL.</p>
                   <p class="warn">Cursor often blocks <code>localhost</code> ("Access to private networks is forbidden"). If that happens, expose this adapter with a public HTTPS tunnel (e.g. Cloudflare Tunnel / ngrok) and use that URL as the base URL instead.</p>
+                  <p class="hint">Clients on other machines only need this Base URL + API key. They do not run OpenGPT themselves.</p>
                 </div>
                 <form method="post" action="/auth/regenerate-key">
                   <button type="submit" class="secondary">Regenerate API key</button>
@@ -151,8 +176,28 @@ class OAuthController(
             } else {
                 """
                 <p>Not authenticated.</p>
-                <p class="hint">Browser login returns to <code>http://localhost:1455/auth/callback</code> (Codex-registered redirect).</p>
-                <p class="hint">Device code login does not need the local callback port. Enable <strong>Device code authorization</strong> in ChatGPT Security settings first.</p>
+                $remoteHint
+                <p class="hint">Browser login returns to <code>http://localhost:1455/auth/callback</code> (Codex-registered redirect) and only works in a browser on the OpenGPT host.</p>
+                <p class="hint">Device code login works from any device. Enable <strong>Device code authorization</strong> in ChatGPT Security settings first.</p>
+                """.trimIndent()
+            }
+
+        val browserLabel = if (authenticated) "Re-login with browser" else "Login with browser"
+        val deviceLabel = if (authenticated) "Re-login with device code" else "Login with device code"
+        val actions =
+            if (remoteAccess) {
+                """
+              <div class="actions">
+                <button type="button" class="button" id="deviceLoginBtn" onclick="startDeviceLogin()">$deviceLabel</button>
+                <a class="secondary" href="/auth/login">$browserLabel</a>
+              </div>
+                """.trimIndent()
+            } else {
+                """
+              <div class="actions">
+                <a class="button" href="/auth/login">$browserLabel</a>
+                <button type="button" class="secondary" id="deviceLoginBtn" onclick="startDeviceLogin()">$deviceLabel</button>
+              </div>
                 """.trimIndent()
             }
 
@@ -164,10 +209,10 @@ class OAuthController(
               <title>OpenGPT</title>
               <style>
                 body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; }
-                a.button, button { display: inline-block; background: #111; color: #fff; padding: .65rem 1.1rem; border-radius: .5rem; text-decoration: none; border: 0; cursor: pointer; font: inherit; }
-                button.secondary, .secondary { background: #444; margin-top: 1rem; }
+                a.button, button.button, button { display: inline-block; background: #111; color: #fff; padding: .65rem 1.1rem; border-radius: .5rem; text-decoration: none; border: 0; cursor: pointer; font: inherit; }
+                a.secondary, button.secondary, .secondary { background: #444; color: #fff; padding: .65rem 1.1rem; border-radius: .5rem; text-decoration: none; border: 0; cursor: pointer; font: inherit; margin-top: 0; }
                 button.linkish { background: transparent; color: #111; padding: 0; text-decoration: underline; margin-top: .75rem; }
-                .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1rem 0; }
+                .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1rem 0; align-items: center; }
                 .ok { color: #0a7a32; }
                 .err { color: #a11; }
                 .hint, .warn { color: #555; font-size: .95rem; }
@@ -185,10 +230,7 @@ class OAuthController(
             <body>
               <h1>OpenGPT</h1>
               $body
-              <div class="actions">
-                <a class="button" href="/auth/login">${if (authenticated) "Re-login with browser" else "Login with browser"}</a>
-                <button type="button" class="secondary" id="deviceLoginBtn" onclick="startDeviceLogin()">${if (authenticated) "Re-login with device code" else "Login with device code"}</button>
-              </div>
+              $actions
               <div id="devicePanel" class="card">
                 <p>Open this link and enter the code:</p>
                 <p><a id="deviceUrl" href="#" target="_blank" rel="noopener"></a></p>
@@ -281,18 +323,23 @@ class OAuthController(
             """.trimIndent()
     }
 
-    private fun successHtml(apiKey: String): String {
-        val home = adapterProperties.publicBaseUrl.trimEnd('/')
+    private fun successHtml(apiKey: String, home: String): String {
+        val homeAttr = PublicBaseUrlResolver.escapeHtml(home)
+        val keyAttr = PublicBaseUrlResolver.escapeHtml(apiKey)
         return """
             <!doctype html>
             <html lang="en">
-            <head><meta charset="utf-8"/><title>Authentication successful</title></head>
+            <head>
+              <meta charset="utf-8"/>
+              <meta http-equiv="refresh" content="1;url=$homeAttr/"/>
+              <title>Authentication successful</title>
+            </head>
             <body style="font-family:system-ui;max-width:44rem;margin:4rem auto;padding:0 1rem">
               <h1>Authentication successful</h1>
               <p>Use these values in Cursor:</p>
-              <p>Base URL: <code>$home/v1</code></p>
-              <p>API Key: <code>$apiKey</code></p>
-              <p><a href="$home/">Open adapter home</a> to copy them with one click.</p>
+              <p>Base URL: <code>$homeAttr/v1</code></p>
+              <p>API Key: <code>$keyAttr</code></p>
+              <p><a href="$homeAttr/">Open adapter home</a> to copy them with one click.</p>
             </body>
             </html>
             """.trimIndent()

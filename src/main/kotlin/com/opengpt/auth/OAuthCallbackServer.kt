@@ -2,6 +2,7 @@ package com.opengpt.auth
 
 import com.opengpt.config.AdapterProperties
 import com.opengpt.config.OAuthProperties
+import com.opengpt.util.PublicBaseUrlResolver
 import com.sun.net.httpserver.HttpServer
 import jakarta.annotation.PreDestroy
 import org.slf4j.LoggerFactory
@@ -47,8 +48,11 @@ class OAuthCallbackServer(
                             if (code.isNullOrBlank() || state.isNullOrBlank()) {
                                 errorPage("Missing authorization code or state")
                             } else {
-                                val token = oauthService.handleCallback(code, state)
-                                successPage(token.apiKey ?: tokenStore.getApiKey().orEmpty())
+                                val result = oauthService.handleCallback(code, state)
+                                successPage(
+                                    apiKey = result.token.apiKey ?: tokenStore.getApiKey().orEmpty(),
+                                    returnUrl = result.returnUrl,
+                                )
                             }
                         }
                     } catch (error: Exception) {
@@ -76,42 +80,45 @@ class OAuthCallbackServer(
         }
     }
 
-    private fun successPage(apiKey: String): String {
-        val home = adapterProperties.publicBaseUrl.trimEnd('/')
+    private fun successPage(apiKey: String, returnUrl: String?): String {
+        val home =
+            PublicBaseUrlResolver.sanitize(returnUrl, adapterProperties.publicBaseUrl)
+        val homeAttr = PublicBaseUrlResolver.escapeHtml(home)
+        val keyAttr = PublicBaseUrlResolver.escapeHtml(apiKey)
         return """
             <!doctype html>
             <html lang="en">
-            <head><meta charset="utf-8"/><title>Authentication successful</title></head>
+            <head>
+              <meta charset="utf-8"/>
+              <meta http-equiv="refresh" content="1;url=$homeAttr/"/>
+              <title>Authentication successful</title>
+            </head>
             <body style="font-family:system-ui;max-width:44rem;margin:4rem auto;padding:0 1rem">
               <h1>Authentication successful</h1>
-              <p>You can configure your AI client.</p>
-              <p>Base URL: <code>$home/v1</code></p>
-              <p>API Key: <code>$apiKey</code></p>
-              <p><a href="$home/">Back to adapter</a> (copy buttons on the home page)</p>
+              <p>Redirecting back to the adapter…</p>
+              <p>Base URL: <code>$homeAttr/v1</code></p>
+              <p>API Key: <code>$keyAttr</code></p>
+              <p><a href="$homeAttr/">Continue to adapter</a> if you are not redirected.</p>
             </body>
             </html>
             """.trimIndent()
     }
 
-    private fun errorPage(message: String): String =
-        """
+    private fun errorPage(message: String): String {
+        val home = PublicBaseUrlResolver.normalize(adapterProperties.publicBaseUrl)
+        val homeAttr = PublicBaseUrlResolver.escapeHtml(home)
+        return """
         <!doctype html>
         <html lang="en">
         <head><meta charset="utf-8"/><title>Authorization failed</title></head>
         <body style="font-family:system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem">
           <h1>Authorization failed</h1>
-          <p>${escape(message)}</p>
-          <p><a href="${adapterProperties.publicBaseUrl.trimEnd('/')}">Back</a></p>
+          <p>${PublicBaseUrlResolver.escapeHtml(message)}</p>
+          <p><a href="$homeAttr/">Back</a></p>
         </body>
         </html>
         """.trimIndent()
-
-    private fun escape(value: String): String =
-        value
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
+    }
 
     private fun parseQuery(raw: String): Map<String, String> {
         if (raw.isBlank()) return emptyMap()

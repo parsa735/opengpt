@@ -20,7 +20,14 @@ import java.util.concurrent.atomic.AtomicReference
 data class PendingOAuth(
     val pkce: PkceCodes,
     val state: String,
+    /** Client-facing origin to link back to after callback (e.g. ngrok URL). */
+    val returnUrl: String? = null,
     val createdAt: Instant = Instant.now(),
+)
+
+data class OAuthLoginResult(
+    val token: OAuthToken,
+    val returnUrl: String? = null,
 )
 
 data class PendingDeviceCode(
@@ -105,11 +112,11 @@ class OAuthService(
     private val pending = AtomicReference<PendingOAuth?>(null)
     private val pendingDevice = AtomicReference<PendingDeviceCode?>(null)
 
-    fun buildAuthorizationUrl(): String {
+    fun buildAuthorizationUrl(returnUrl: String? = null): String {
         pendingDevice.set(null)
         val pkce = pkceGenerator.generate()
         val state = pkceGenerator.randomState()
-        pending.set(PendingOAuth(pkce = pkce, state = state))
+        pending.set(PendingOAuth(pkce = pkce, state = state, returnUrl = returnUrl))
         log.info("OAuth login started")
 
         val params =
@@ -133,7 +140,7 @@ class OAuthService(
         return "${properties.issuer.trimEnd('/')}/oauth/authorize?$query"
     }
 
-    fun handleCallback(code: String, state: String): OAuthToken {
+    fun handleCallback(code: String, state: String): OAuthLoginResult {
         val current =
             pending.getAndSet(null)
                 ?: throw IllegalStateException("No pending OAuth login")
@@ -145,7 +152,10 @@ class OAuthService(
         val saved = toStoredToken(tokens)
         tokenStore.save(saved)
         log.info("OAuth login completed")
-        return tokenStore.getToken() ?: saved
+        return OAuthLoginResult(
+            token = tokenStore.getToken() ?: saved,
+            returnUrl = current.returnUrl,
+        )
     }
 
     fun startDeviceCodeLogin(): DeviceCodeStart {

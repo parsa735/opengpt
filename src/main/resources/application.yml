@@ -1,5 +1,6 @@
 server:
   port: 5080
+  # Default: loopback only. For a dedicated host / LAN bind, set SERVER_ADDRESS=0.0.0.0
   address: 127.0.0.1
 
 spring:
@@ -10,7 +11,9 @@ spring:
 
 adapter:
   storage-path: ${user.home}/.opengpt/auth.json
-  # Main app URL shown in the UI (OAuth callback stays on :1455)
+  # Fallback when the UI cannot infer the client-facing origin from Host / X-Forwarded-*.
+  # Behind ngrok the home page prefers the request Host automatically; set this to your
+  # public URL if browser-OAuth success pages (port 1455) should link back there too.
   public-base-url: http://localhost:5080
   # Plain Cursor ↔ Codex request/response dump for lab debugging
   traffic-log-path: ${user.home}/.opengpt/traffic.log

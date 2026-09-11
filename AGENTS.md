@@ -66,7 +66,7 @@ The package structure is organized by responsibility:
 - `streaming`: upstream SSE decoding and Responses-to-Chat-Completions translation.
 - `debug`: append-only request/response traffic logging.
 - `model`: persisted domain data.
-- `util`: small JSON compatibility helpers.
+- `util`: small JSON compatibility helpers and public-base-URL resolution for the auth UI.
 
 The normal dependency direction is:
 
@@ -99,13 +99,13 @@ This is deliberate current behavior. Changing to fully reactive controllers or t
 Browser callback flow:
 
 1. `OAuthController.login()` ensures that the callback server is running.
-2. `OAuthService.buildAuthorizationUrl()` clears any pending device-code login, creates a PKCE verifier/challenge and random state, then stores one pending browser login in memory.
+2. `OAuthService.buildAuthorizationUrl(returnUrl)` clears any pending device-code login, creates a PKCE verifier/challenge and random state, stores one pending browser login (including optional return URL) in memory.
 3. The browser is redirected to OpenAI.
 4. OpenAI redirects to `http://localhost:1455/auth/callback`.
 5. `OAuthCallbackServer` validates that code and state exist and delegates to `OAuthService.handleCallback()`.
 6. `OAuthService` atomically consumes the pending login, verifies the state, exchanges the code against the localhost redirect URI, extracts account/residency JWT claims, and saves the result.
 7. `FileTokenStore` generates a local `sk-cla-...` API key if one is not already present and writes the credentials file.
-8. The callback page displays the local base URL and generated local API key.
+8. The callback page displays the client-facing base URL and generated local API key, then redirects to the return URL captured when `/auth/login` started (request Host / `X-Forwarded-*`, else `adapter.public-base-url`).
 
 Device-code flow (Codex headless login):
 
@@ -306,7 +306,8 @@ This feature reads local files named by client content and uploads recovered byt
 
 #### `src/main/kotlin/com/opengpt/auth/OAuthService.kt`
 
-- `PendingOAuth`: in-memory PKCE/state record for one browser login attempt.
+- `PendingOAuth`: in-memory PKCE/state/return-URL record for one browser login attempt.
+- `OAuthLoginResult`: token plus optional return URL after a successful browser callback.
 - `PendingDeviceCode` / `DeviceCodeStart` / `DeviceCodePollResult`: device-code login state and poll outcomes.
 - `TokenResponse`: OAuth token endpoint DTO; ignores unknown fields.
 - `DeviceCodeUserResponse` / `DeviceCodeTokenSuccess`: Codex device-auth endpoint DTOs.
@@ -328,8 +329,8 @@ This feature reads local files named by client content and uploads recovered byt
 #### `src/main/kotlin/com/opengpt/auth/OAuthCallbackServer.kt`
 
 - `OAuthCallbackServer`: lazy JDK `HttpServer` bound to loopback port `1455`.
-- Parses callback query parameters, calls `OAuthService`, and serves success/error HTML.
-- Error messages are HTML-escaped. The configurable public base URL in success/navigation markup is not escaped; `OAuthController` has the same interpolation behavior.
+- Parses callback query parameters, calls `OAuthService`, and serves success/error HTML (success redirects to the pending return URL when present).
+- Error messages are HTML-escaped. Return URLs are sanitized to `http`/`https` origins and escaped in markup.
 - Uses a cached thread pool, synchronized lifecycle, and `@PreDestroy` shutdown.
 - The port and callback path are protocol constraints for the configured Codex OAuth client.
 - Change with: `OAuthController`, `OAuthProperties`, and end-to-end OAuth behavior.
@@ -337,6 +338,7 @@ This feature reads local files named by client content and uploads recovered byt
 #### `src/main/kotlin/com/opengpt/auth/OAuthController.kt`
 
 - `OAuthController`: Spring MVC controller for browser login, device-code start/poll, fallback callback, auth status, local-key regeneration, and the inline HTML/CSS/JavaScript home UI.
+- Home UI derives the copyable Base URL from the request Host / forwarded headers; when the origin is not loopback it promotes device-code login because browser OAuth cannot leave `localhost:1455` on a remote client.
 - Home UI offers both browser and device-code login; device-code JS polls `/auth/device/poll` until completion.
 - Displays the local key on loopback to the local user.
 - Change when: altering local onboarding or auth-management endpoints. Keep secrets out of `/auth/status`.
@@ -488,16 +490,21 @@ This feature reads local files named by client content and uploads recovered byt
 - `jsonText`/`jsonTextAt`: preserve objects/arrays by serializing them, which is important for function arguments and tool output.
 - Reuse these helpers at compatibility boundaries instead of scattering subtly different Jackson coercion behavior.
 
+#### `src/main/kotlin/com/opengpt/util/PublicBaseUrlResolver.kt`
+
+- `PublicBaseUrlResolver`: builds the client-facing origin from Host / `X-Forwarded-Proto` / `X-Forwarded-Host`, sanitizes return URLs to `http`/`https`, detects loopback hosts, and HTML-escapes values for the auth UI.
+- Change with: `OAuthController`, `OAuthCallbackServer`, and `PublicBaseUrlResolverTest`.
+
 ## 7. Configuration and local state map
 
 ### `src/main/resources/application.yml`
 
 - `server.port`: main Spring server; default `5080`.
-- `server.address`: loopback bind; default `127.0.0.1`.
+- `server.address`: loopback bind; default `127.0.0.1`. Override with `SERVER_ADDRESS=0.0.0.0` for dedicated-host / LAN listen (tunnel tools can keep using loopback).
 - `spring.main.web-application-type`: explicitly `servlet`.
 - `spring.application.name`: Spring application identity; default `opengpt`.
 - `adapter.storage-path`: credentials/local-key JSON; default `~/.opengpt/auth.json`.
-- `adapter.public-base-url`: base shown in UI; can be a tunnel URL, but it does not change the server bind.
+- `adapter.public-base-url`: fallback client-facing origin for UI/OAuth success links when the request Host is unavailable; the home page prefers Host / `X-Forwarded-*` so tunnel URLs stay correct. Does not change the server bind.
 - `adapter.traffic-log-path`: unredacted traffic log; default `~/.opengpt/traffic.log`.
 - `openai.oauth.client-id`: Codex OAuth public client ID.
 - `openai.oauth.issuer`: OpenAI OAuth issuer.
@@ -581,7 +588,9 @@ There is no Maven wrapper in the current project. Use Maven 3.9+ from the enviro
 - `src/test/kotlin/com/opengpt/auth/JwtParserTest.kt`
   - Protects root/namespaced/organization account lookup and residency extraction.
 - `src/test/kotlin/com/opengpt/auth/PkceGeneratorTest.kt`
-  - Protects verifier length and S256 computation. It calls `randomState()` and manually assembles an illustrative URL, but it does not exercise `OAuthService.buildAuthorizationUrl()`, prove state uniqueness/shape, or verify production's default `originator=opencode`.
+   - Protects verifier length and S256 computation. It calls `randomState()` and manually assembles an illustrative URL, but it does not exercise `OAuthService.buildAuthorizationUrl()`, prove state uniqueness/shape, or verify production's default `originator=opencode`.
+- `src/test/kotlin/com/opengpt/util/PublicBaseUrlResolverTest.kt`
+   - Protects Host / `X-Forwarded-*` origin resolution, return-URL sanitization, and loopback detection for tunnel/remote UI links.
 - `src/test/kotlin/com/opengpt/auth/DeviceCodeAuthWireMockTest.kt`
   - Protects device-code usercode start, 404-not-enabled handling, pending→authorized poll, and token exchange against `{issuer}/deviceauth/callback`.
 

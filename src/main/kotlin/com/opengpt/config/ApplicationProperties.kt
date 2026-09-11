@@ -5,7 +5,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 @ConfigurationProperties(prefix = "adapter")
 data class AdapterProperties(
     val storagePath: String,
-    /** UI / client-facing base URL for the main API (may differ from OAuth callback port). */
+    /**
+     * Fallback UI / client-facing base URL when the request Host cannot be used
+     * (may differ from the OAuth callback port). Prefer request Host / X-Forwarded-*
+     * for tunnel and dedicated-server access; set this to the public origin when
+     * browser-OAuth success pages on :1455 must link back to that origin.
+     */
     val publicBaseUrl: String = "http://localhost:5080",
     /** Plain Cursor↔Codex traffic dump for lab debugging. */
     val trafficLogPath: String = System.getProperty("user.home") + "/.opengpt/traffic.log",
