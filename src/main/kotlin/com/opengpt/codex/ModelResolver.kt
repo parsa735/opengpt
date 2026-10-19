@@ -87,8 +87,6 @@ class ModelResolver {
         return Resolved(key, null)
     }
 
-    fun resolveModelId(requested: String?): String = resolve(requested).model
-
     private fun resolveCursorEffortAlias(modelId: String): Resolved? {
         for ((aliasBase, codexModel) in CURSOR_EFFORT_ALIAS_BASES) {
             for (effort in publicEffortsFor(codexModel)) {
